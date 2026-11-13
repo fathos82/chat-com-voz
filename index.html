@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flora – Chat</title>
+<style>
+  /* Cores do chat (a URL do webhook fica no script, em WEBHOOK_URL) */
+  :root { --cor: #ff6d5a; --fundo: #f4f4f6; --bot: #ffffff; --user: #ff6d5a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--fundo); height: 100vh; display: flex; justify-content: center; }
+  .app { width: 100%; max-width: 720px; display: flex; flex-direction: column; height: 100vh; background: #fafafa; box-shadow: 0 0 20px rgba(0,0,0,.06); }
+  header { padding: 14px 18px; background: var(--cor); color: #fff; display: flex; align-items: center; gap: 10px; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header small { opacity: .85; font-size: 12px; display: block; }
+  #msgs { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 80%; padding: 10px 14px; border-radius: 14px; line-height: 1.45; font-size: 15px; white-space: pre-wrap; word-wrap: break-word; }
+  .bot { background: var(--bot); align-self: flex-start; border: 1px solid #e6e6ea; border-bottom-left-radius: 4px; }
+  .user { background: var(--user); color: #fff; align-self: flex-end; border-bottom-right-radius: 4px; }
+  .msg audio { display: block; max-width: 240px; margin-top: 4px; }
+  .msg img { display: block; max-width: 220px; border-radius: 8px; margin-top: 4px; }
+  .typing { color: #888; font-style: italic; }
+  footer { padding: 10px; border-top: 1px solid #e6e6ea; background: #fff; }
+  #preview { display: none; font-size: 13px; color: #555; margin: 0 4px 8px; align-items: center; gap: 8px; flex-wrap: wrap; }
+  #preview.show { display: flex; }
+  #preview button { border: none; background: #eee; border-radius: 6px; padding: 3px 8px; cursor: pointer; }
+  .row { display: flex; gap: 8px; align-items: flex-end; }
+  textarea { flex: 1; resize: none; border: 1px solid #ddd; border-radius: 12px; padding: 10px 12px; font: inherit; font-size: 15px; max-height: 120px; outline: none; }
+  textarea:focus { border-color: var(--cor); }
+  .ib { width: 42px; height: 42px; border-radius: 50%; border: none; cursor: pointer; display: grid; place-items: center; background: #f0f0f2; color: #444; flex-shrink: 0; }
+  .ib:hover { background: #e4e4e8; }
+  .ib svg { width: 20px; height: 20px; }
+  #send { background: var(--cor); color: #fff; }
+  #mic.rec { background: #e53935; color: #fff; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(229,57,53,.5)} 70%{box-shadow:0 0 0 10px rgba(229,57,53,0)} 100%{box-shadow:0 0 0 0 rgba(229,57,53,0)} }
+  #recInfo { display: none; flex: 1; align-items: center; gap: 8px; color: #e53935; font-weight: 600; padding: 0 6px; }
+  #recInfo.show { display: flex; }
+  #recInfo button { margin-left: auto; border: none; background: none; color: #888; cursor: pointer; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1>Flora</h1>
+      <small>Online</small>
+    </div>
+  </header>
+
+  <div id="msgs"></div>
+
+  <footer>
+    <div id="preview"></div>
+    <div class="row">
+      <button class="ib" id="attach" title="Anexar arquivo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.4 11.1l-9.2 9.2a6 6 0 01-8.5-8.5l9.2-9.2a4 4 0 015.7 5.7l-9.2 9.2a2 2 0 01-2.8-2.8l8.5-8.5"/></svg>
+      </button>
+      <input type="file" id="file" accept="image/*,audio/*" hidden multiple>
+      <textarea id="input" rows="1" placeholder="Digite sua mensagem..."></textarea>
+      <div id="recInfo">● <span id="timer">0:00</span><button id="cancelRec">cancelar</button></div>
+      <button class="ib" id="mic" title="Gravar áudio">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0014 0M12 17v5M8 22h8"/></svg>
+      </button>
+      <button class="ib" id="send" title="Enviar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+      </button>
+    </div>
+  </footer>
+</div>
+
+<script>
+/* ========= CONFIGURE AQUI ========= */
+// Cole a URL do Chat Trigger (aparece no topo do nó, termina em /chat)
+const WEBHOOK_URL = 'https://n8n.rvcarbon.com.br/webhook/9ddd95a3-7a73-470c-a9db-21464a1009c5/chat';
+const MENSAGENS_INICIAIS = ['Hi there! 👋', 'My name is Nathan. How can I assist you today?'];
+const TEMPO_MAX_GRAVACAO = 120; // segundos
+/* ================================== */
+
+const $ = id => document.getElementById(id);
+const msgs = $('msgs'), input = $('input'), fileEl = $('file'), preview = $('preview');
+let anexos = [];
+
+// Nova sessão a cada carregamento da página (refresh = conversa nova)
+const sessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2);
+
+function addMsg(who, text, files = []) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + who;
+  if (text) d.appendChild(document.createTextNode(text));
+  files.forEach(f => {
+    const url = URL.createObjectURL(f);
+    if (f.type.startsWith('audio')) { const a = document.createElement('audio'); a.controls = true; a.src = url; d.appendChild(a); }
+    else if (f.type.startsWith('image')) { const i = document.createElement('img'); i.src = url; d.appendChild(i); }
+    else d.appendChild(document.createTextNode('📎 ' + f.name));
+  });
+  msgs.appendChild(d);
+  msgs.scrollTop = msgs.scrollHeight;
+  return d;
+}
+MENSAGENS_INICIAIS.forEach(m => addMsg('bot', m));
+
+function renderPreview() {
+  preview.innerHTML = '';
+  preview.classList.toggle('show', anexos.length > 0);
+  anexos.forEach((f, i) => {
+    const s = document.createElement('span'); s.textContent = '📎 ' + f.name;
+    const b = document.createElement('button'); b.textContent = '✕'; b.onclick = () => { anexos.splice(i, 1); renderPreview(); };
+    preview.append(s, b);
+  });
+}
+
+// Lê a resposta do n8n — funciona com modo normal (JSON) e streaming (NDJSON)
+async function lerResposta(res, bolha) {
+  // Não confia no Content-Type: o n8n manda streaming como application/json.
+  // Lê sempre em fluxo e decide pelo conteúdo.
+  if (!res.body) {
+    const txt = await res.text();
+    try { const j = JSON.parse(txt); const o = Array.isArray(j) ? j[0] : j; bolha.textContent = o.output ?? o.text ?? o.message ?? txt; }
+    catch { bolha.textContent = txt; }
+    return;
+  }
+  const reader = res.body.getReader(); const dec = new TextDecoder();
+  let buf = '', acumulado = '', bruto = '', erro = '', ehStream = false;
+  // Extrai objetos JSON completos do buffer, estejam eles colados (}{) ou separados por \n
+  let prof = 0, emString = false, escape = false, inicioObj = -1, pos = 0;
+  const extrai = () => {
+    for (; pos < buf.length; pos++) {
+      const c = buf[pos];
+      if (emString) {
+        if (escape) escape = false;
+        else if (c === '\\') escape = true;
+        else if (c === '"') emString = false;
+        continue;
+      }
+      if (c === '"') emString = true;
+      else if (c === '{') { if (prof === 0) inicioObj = pos; prof++; }
+      else if (c === '}' && prof > 0) {
+        prof--;
+        if (prof === 0 && inicioObj >= 0) { processa(buf.slice(inicioObj, pos + 1)); inicioObj = -1; }
+      }
+    }
+    // descarta o que já foi processado
+    const corte = inicioObj >= 0 ? inicioObj : buf.length;
+    buf = buf.slice(corte); pos -= corte; if (inicioObj >= 0) inicioObj = 0;
+  };
+  const processa = l => {
+    if (!l.trim()) return;
+    let j; try { j = JSON.parse(l); } catch { return; }
+    if (j && j.type) ehStream = true;
+    if (j.type === 'item' && j.content) {
+      acumulado += typeof j.content === 'string' ? j.content : JSON.stringify(j.content);
+      bolha.classList.remove('typing'); bolha.textContent = acumulado; msgs.scrollTop = msgs.scrollHeight;
+    } else if (j.type === 'error') {
+      erro = j.content || (j.metadata && j.metadata.error) || 'erro no workflow';
+    }
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = dec.decode(value, { stream: true });
+    bruto += chunk; buf += chunk;
+    extrai();
+  }
+  console.log('[chat] resposta bruta do n8n:', bruto);
+  if (acumulado) return;
+  if (erro) { bolha.textContent = '⚠️ ' + erro; return; }
+  if (!ehStream) {
+    try { const j = JSON.parse(bruto); const o = Array.isArray(j) ? j[0] : j; const t = o.output ?? o.text ?? o.message; if (t) { bolha.textContent = t; return; } } catch {}
+    if (bruto.trim() && !bruto.trim().startsWith('{') && !bruto.trim().startsWith('[')) { bolha.textContent = bruto; return; }
+  }
+  bolha.textContent = '⚠️ O agente respondeu vazio. Veja a execução no n8n (aba Executions).';
+}
+
+async function enviar(texto, arquivos) {
+  if (!texto && !arquivos.length) return;
+  addMsg('user', texto, arquivos);
+  const bolha = addMsg('bot', 'digitando...'); bolha.classList.add('typing');
+  try {
+    // Sempre multipart/form-data: é uma "simple request", então o navegador
+    // não faz preflight (OPTIONS) — evita a maioria dos erros de CORS.
+    const fd = new FormData();
+    fd.append('action', 'sendMessage');
+    fd.append('sessionId', sessionId);
+    fd.append('chatInput', texto || '');
+    fd.append('metadata', '{}');
+    arquivos.forEach(f => fd.append('files', f, f.name));
+    const res = await fetch(WEBHOOK_URL, { method: 'POST', body: fd });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    bolha.classList.remove('typing');
+    await lerResposta(res, bolha);
+  } catch (e) {
+    bolha.classList.remove('typing');
+    bolha.textContent = '⚠️ Não consegui falar com o servidor (' + e.message + '). Confira a WEBHOOK_URL e o Allowed Origins (CORS) no n8n.';
+  }
+}
+
+$('send').onclick = () => { const t = input.value.trim(); const a = anexos; input.value = ''; anexos = []; renderPreview(); enviar(t, a); };
+input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('send').click(); } });
+input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = input.scrollHeight + 'px'; });
+$('attach').onclick = () => fileEl.click();
+fileEl.onchange = () => { anexos.push(...fileEl.files); fileEl.value = ''; renderPreview(); };
+
+/* ===== Gravação de voz ===== */
+let rec = null, chunks = [], stream = null, tick = null, inicio = 0, cancelado = false;
+const mic = $('mic'), recInfo = $('recInfo');
+
+function tipoSuportado() {
+  for (const t of ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'])
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(t)) return t;
+  return '';
+}
+
+async function iniciarGravacao() {
+  if (!navigator.mediaDevices || !window.MediaRecorder) { alert('Seu navegador não suporta gravação de áudio.'); return; }
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { alert('Permita o acesso ao microfone para gravar.'); return; }
+  const mime = tipoSuportado();
+  rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  chunks = []; cancelado = false;
+  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onstop = () => {
+    stream.getTracks().forEach(t => t.stop());
+    clearInterval(tick);
+    mic.classList.remove('rec'); recInfo.classList.remove('show'); input.style.display = '';
+    if (cancelado || !chunks.length) return;
+    const tipo = (rec.mimeType || 'audio/webm').split(';')[0];
+    const ext = tipo.includes('ogg') ? 'ogg' : tipo.includes('mp4') ? 'm4a' : 'webm';
+    const arquivo = new File(chunks, `audio_${Date.now()}.${ext}`, { type: tipo });
+    const t = input.value.trim(); input.value = '';
+    enviar(t, [arquivo]);
+  };
+  rec.start();
+  inicio = Date.now();
+  mic.classList.add('rec'); recInfo.classList.add('show'); input.style.display = 'none';
+  tick = setInterval(() => {
+    const s = Math.floor((Date.now() - inicio) / 1000);
+    $('timer').textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    if (s >= TEMPO_MAX_GRAVACAO) rec.stop();
+  }, 250);
+}
+
+mic.onclick = () => { if (rec && rec.state === 'recording') rec.stop(); else iniciarGravacao(); };
+$('cancelRec').onclick = () => { cancelado = true; if (rec && rec.state === 'recording') rec.stop(); };
+</script>
+</body>
+</html>
